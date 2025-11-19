@@ -520,12 +520,12 @@ elif menu == "会员管理":
             st.dataframe(display_df, use_container_width=True, hide_index=True)
             st.caption("💡 提示：输入 **姓名** 或 **手机号** 锁定一人后，即可修改全部资料。")
 # ==========================
-# 功能 D: 账目查询 (分组柱状图版)
+# 功能 D: 账目查询 (图表优化版)
 # ==========================
 if menu == "账目查询":
     st.header("📊 经营数据分析")
     
-    # --- 1. 顶部图表：近7天收支 (左右并排) ---
+    # --- 1. 顶部图表：近7天收支 ---
     st.subheader("📈 近7天经营趋势")
     
     chart_sql = """
@@ -539,30 +539,29 @@ if menu == "账目查询":
     chart_df = run_query(chart_sql, {"owner": CURRENT_USER})
     
     if not chart_df.empty:
-        # 数据映射：英文转中文
         chart_df['type_cn'] = chart_df['type'].map({'RECHARGE': '充值收入', 'SPEND': '消费扣款'})
         
-        # 补全日期（防止某天没数据导致柱子缺失）
+        # 补全日期逻辑
         all_days = pd.date_range(end=datetime.now().date(), periods=7, freq='D')
         all_types = ['充值收入', '消费扣款']
         full_index = pd.MultiIndex.from_product([all_days, all_types], names=['day', 'type_cn'])
         chart_df_pivot = chart_df.set_index(['day', 'type_cn'])['total'].reindex(full_index, fill_value=0).reset_index()
         chart_df_pivot['day'] = pd.to_datetime(chart_df_pivot['day'])
 
-        # 使用 Altair 画分组图
+        # 画图
         chart = alt.Chart(chart_df_pivot).mark_bar().encode(
-            # X轴：类型 (充值/消费)，并隐藏轴标题
-            x=alt.X('type_cn:N', axis=alt.Axis(title=None, labels=True)),
+            # 【关键修改 1】X轴：隐藏底部的 "充值收入/消费扣款" 文字
+            x=alt.X('type_cn:N', axis=alt.Axis(title=None, labels=False, ticks=False)),
             
             # Y轴：金额
             y=alt.Y('total:Q', axis=alt.Axis(title='金额 (¥)')),
             
-            # 颜色：红绿区分
+            # 【关键修改 2】颜色 & 图例：图例会自动显示在右上/右侧
             color=alt.Color('type_cn:N', 
                             scale=alt.Scale(domain=['消费扣款', '充值收入'], range=['#FF4B4B', '#00C805']),
-                            legend=alt.Legend(title="类型")),
+                            legend=alt.Legend(title="类型", orient="right")), # orient="right" 是默认位置
             
-            # 【关键】Column：按日期分列，实现分组效果
+            # 列分组：按日期排开
             column=alt.Column('day:T', 
                               header=alt.Header(titleOrient="bottom", labelOrient="bottom", format='%m-%d'),
                               title='日期'),
@@ -580,7 +579,7 @@ if menu == "账目查询":
         
     st.divider()
 
-    # --- 2. 详细查询 ---
+    # --- 2. 详细查询 (保持不变，记得不要把这下面的代码删了) ---
     st.subheader("🔍 详细账目查询")
     
     col1, col2 = st.columns([1, 2])
