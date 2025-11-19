@@ -43,7 +43,7 @@ def process_signature(image_data):
 st.title("💅 美甲店云端管理")
 
 # 侧边栏导航
-menu = st.sidebar.radio("功能菜单", ["消费结账 (含签字)", "会员充值", "新建会员", "账目查询"])
+menu = st.sidebar.radio("功能菜单", ["消费结账 (含签字)", "会员充值", "新建会员", "会员查询/修改", "账目查询"])
 
 # ==========================
 # 功能 A: 新建会员
@@ -88,6 +88,74 @@ if menu == "新建会员":
                     
             except Exception as e:
                 st.error(f"发生错误 (可能是手机号重复): {e}")
+
+# ==========================
+# 功能: 会员查询/修改 (新增)
+# ==========================
+elif menu == "会员查询/修改":
+    st.header("🔍 会员档案管理")
+    phone_search = st.text_input("输入手机号查找会员", placeholder="例如: 13800138000")
+    
+    if phone_search:
+        # 联合查询会员基本信息和账户信息
+        sql = """
+            SELECT m.id, m.name, m.phone, m.birthday, m.note, m.created_at,
+                   a.balance, a.current_discount 
+            FROM members m 
+            LEFT JOIN accounts a ON m.id = a.member_id 
+            WHERE m.phone = :phone
+        """
+        df = run_query(sql, {"phone": phone_search})
+        
+        if not df.empty:
+            row = df.iloc[0]
+            m_id = int(row['id'])
+            m_note = row['note'] if row['note'] else ""
+            
+            # 1. 展示基本信息卡片
+            st.success(f"已找到会员: **{row['name']}**")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"📱 **手机:** {row['phone']}")
+                st.write(f"🎂 **生日:** {row['birthday']}")
+                # 格式化一下注册日期，只显示到天
+                reg_date = pd.to_datetime(row['created_at']).strftime('%Y-%m-%d')
+                st.caption(f"注册时间: {reg_date}")
+            
+            with col2:
+                # 显示大字体的余额和折扣
+                st.metric("当前余额", f"¥{row['balance']}")
+                disc_display = f"{int(row['current_discount']*100)}折" if row['current_discount'] < 1.0 else "无折扣"
+                st.metric("当前权益", disc_display)
+
+            st.divider()
+            
+            # 2. 修改备注区域
+            st.subheader("📝 修改备注")
+            
+            with st.form("edit_note_form"):
+                # 文本框里默认填入从数据库查出来的旧备注
+                new_note = st.text_area("备注内容 (喜好/忌讳/特别说明)", value=m_note, height=100)
+                
+                submit_update = st.form_submit_button("💾 保存备注修改")
+                
+                if submit_update:
+                    try:
+                        # 更新数据库
+                        update_sql = "UPDATE members SET note = :note WHERE id = :mid"
+                        run_transaction(update_sql, {"note": new_note, "mid": m_id})
+                        
+                        st.success("备注已更新！")
+                        # 延迟刷新页面，让用户看到成功提示
+                        import time
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"修改失败: {e}")
+                        
+        else:
+            st.info("未找到该手机号，请检查输入。")
 
 # ==========================
 # 功能 B: 会员充值 (修改版)
