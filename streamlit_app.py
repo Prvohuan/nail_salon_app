@@ -284,43 +284,94 @@ elif menu == "消费结账":
             st.warning("未找到会员 (请尝试全号、尾号或姓名)")
 
 # ==========================
-# 功能: 会员查询/修改
+# 功能: 会员查询/修改 (花名册模式)
 # ==========================
 elif menu == "会员查询/修改":
-    phone_search = st.text_input("输入手机号查找")
-    if phone_search:
-        # 【关键修改】查询加 owner
-        sql = """
-            SELECT m.id, m.name, m.phone, m.birthday, m.note, m.created_at, a.balance, a.current_discount 
-            FROM members m LEFT JOIN accounts a ON m.id = a.member_id 
-            WHERE (m.phone = :term OR m.name = :term OR m.phone LIKE :tail)
-        """
-        df = run_query(sql, {"phone": phone_search, "owner": CURRENT_USER})
-        
-        if not df.empty:
+    st.header("🔍 会员档案管理")
+    
+    # 1. 搜索框
+    search_term = st.text_input("搜索会员 (支持姓名/全号/尾号)", placeholder="留空则显示全部会员").strip()
+    
+    # 2. 构造 SQL (默认查所有，有搜索词则加筛选)
+    sql = """
+        SELECT m.id, m.name, m.phone, m.birthday, m.note, m.created_at, 
+               a.balance, a.current_discount 
+        FROM members m 
+        LEFT JOIN accounts a ON m.id = a.member_id 
+        WHERE m.owner_username = :owner
+    """
+    params = {"owner": CURRENT_USER}
+    
+    if search_term:
+        sql += " AND (m.phone = :term OR m.name = :term OR m.phone LIKE :tail)"
+        params["term"] = search_term
+        # 如果是4位数字，当做尾号处理
+        params["tail"] = f"%{search_term}" if (len(search_term)==4 and search_term.isdigit()) else "impossible_match"
+    
+    # 按注册时间倒序排列 (新的在前面)
+    sql += " ORDER BY m.id DESC"
+    
+    df = run_query(sql, params)
+    
+    # 3. 界面展示逻辑
+    if df.empty:
+        st.info("暂无数据")
+    else:
+        # --- 情况 A: 刚好锁定 1 个人 -> 显示详情卡片 + 修改界面 ---
+        if len(df) == 1:
             row = df.iloc[0]
             m_id = int(row['id'])
-            st.success(f"会员: {row['name']}")
-            col1, col2 = st.columns(2)
-            col1.write(f"📱 {row['phone']}")
-            col1.write(f"🎂 {row['birthday']}")
-            col2.metric("余额", f"¥{row['balance']}")
             
+            st.success(f"已锁定会员: **{row['name']}**")
+            
+            # 详情卡片
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"📱 **手机:** {row['phone']}")
+                st.write(f"🎂 **生日:** {row['birthday']}")
+                reg_date = pd.to_datetime(row['created_at']).strftime('%Y-%m-%d')
+                st.caption(f"注册日期: {reg_date}")
+            
+            with col2:
+                bal = row['balance'] if row['balance'] is not None else 0
+                disc = row['current_discount'] if row['current_discount'] is not None else 1.0
+                st.metric("当前余额", f"¥{bal}")
+                st.metric("权益等级", f"{int(disc*100)}折" if disc < 1 else "无折扣")
+
+            st.divider()
+            
+            # 修改备注表单
+            st.subheader("📝 修改档案")
             with st.form("edit_note"):
-                new_note = st.text_area("备注", value=row['note'] if row['note'] else "")
-                if st.form_submit_button("保存修改"):
-                    # 【关键修改】更新时也要限制 owner，防止改错人
+                new_note = st.text_area("备注内容", value=row['note'] if row['note'] else "", height=100)
+                if st.form_submit_button("💾 保存修改"):
                     run_transaction("UPDATE members SET note = :note WHERE id = :mid AND owner_username = :owner",
                                     {"note": new_note, "mid": m_id, "owner": CURRENT_USER})
-                    st.success("已更新")
+                    st.success("已更新！")
                     time.sleep(1)
                     st.rerun()
-        else:
-            st.info("未找到")
+            
+            # 加个小按钮方便退回列表
+            if st.button("🔙 返回列表"):
+                 # Streamlit的trick: 虽然不能直接清空输入框，但刷新可以重置状态
+                 # 或者这里什么都不做，用户自己删掉搜索词也行
+                 st.rerun()
 
-# ==========================
-# 功能 D: 账目查询
-# ==========================
+        # --- 情况 B: 多人 (或全部) -> 显示表格清单 ---
+        else:
+            st.write(f"共找到 **{len(df)}** 位会员")
+            
+            # 整理一下表格显示的列名，让它好看点
+            display_df = df[['name', 'phone', 'balance', 'note', 'created_at']].copy()
+            display_df.columns = ['姓名', '手机号', '余额', '备注', '注册时间']
+            
+            # 简单的格式化
+            display_df['余额'] = display_df['余额'].fillna(0).apply(lambda x: f"¥{x}")
+            display_df['注册时间'] = pd.to_datetime(display_df['注册时间']).dt.strftime('%Y-%m-%d')
+            
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+            
+            st.caption("💡 提示：输入精准的 **姓名** 或 **手机号** 即可进入编辑模式。")
 # ==========================
 # 功能 D: 账目查询 (优化日期显示)
 # ==========================
