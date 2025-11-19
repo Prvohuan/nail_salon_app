@@ -84,76 +84,42 @@ if st.sidebar.button("退出登录"):
     st.session_state.current_user = None
     st.rerun()
 
-menu = st.sidebar.radio("功能菜单", ["消费结账", "会员充值", "新建会员", "会员查询/修改", "账目查询"])
+menu = st.sidebar.radio("功能菜单", ["消费结账", "会员充值/新建", "会员查询/修改", "账目查询"])
 st.title(f"💅 {menu}")
 
 # ==========================
-# 功能 A: 新建会员
+# 功能: 会员充值/新建 (合并版)
 # ==========================
-if menu == "新建会员":
-    with st.form("new_member_form"):
-        name = st.text_input("姓名")
-        phone = st.text_input("手机号 (作为唯一ID)")
-        birthday = st.date_input("生日", value=datetime(1995, 1, 1), min_value=datetime(1900, 1, 1))
-        note = st.text_area("备注")
-        submitted = st.form_submit_button("创建会员")
-        
-        if submitted:
-            try:
-                # 【关键修改】插入时加上 owner_username
-                sql_member = """
-                    INSERT INTO members (name, phone, birthday, note, owner_username) 
-                    VALUES (:name, :phone, :birthday, :note, :owner);
-                """
-                run_transaction(sql_member, {
-                    "name": name, "phone": phone, 
-                    "birthday": birthday, "note": note,
-                    "owner": CURRENT_USER # 👈 标记这条数据属于当前老板
-                })
-
-                # 初始化账户 (查刚才插入的ID)
-                # 【关键修改】查询时也要限制 owner，防止手机号跨店冲突
-                df = run_query("SELECT id FROM members WHERE phone = :phone AND owner_username = :owner", 
-                               {"phone": phone, "owner": CURRENT_USER})
-                
-                if not df.empty:
-                    m_id = int(df.iloc[0]['id'])
-                    run_transaction("INSERT INTO accounts (member_id, balance, current_discount) VALUES (:mid, 0, 1.0)", {"mid": m_id})
-                    st.success(f"会员 {name} 创建成功！")
-                
-            except Exception as e:
-                st.error(f"创建失败 (可能手机号已存在): {e}")
-
-# ==========================
-# 功能 B: 会员充值 (支持姓名/尾号)
-# ==========================
-elif menu == "会员充值":
-    search_term = st.text_input("搜索会员 (支持: 姓名 / 手机全号 / 手机后4位)").strip()
+if menu == "会员充值/新建":
+    st.header("💰 会员充值 / 新建档案")
+    
+    # 1. 统一搜索入口
+    search_term = st.text_input("🔍 输入手机号/姓名/尾号 (回车确认)", placeholder="老客直接搜，新客输入手机号自动新建").strip()
     
     if search_term:
-        # 智能构造 SQL：支持 手机全号 OR 姓名 OR 手机尾号
-        # 注意：Postgres 的 text 类型默认区分大小写，这里暂时不做忽略大小写处理，假设输入准确
+        # --- 搜索逻辑 ---
         sql = """
-            SELECT m.id, m.name, a.balance, a.current_discount 
+            SELECT m.id, m.name, m.phone, a.balance, a.current_discount 
             FROM members m 
             JOIN accounts a ON m.id = a.member_id 
-            WHERE (m.phone = :term OR m.name = :term OR m.phone LIKE :tail)
+            WHERE (m.phone = :term OR m.name ILIKE :term OR m.phone LIKE :tail)
             AND m.owner_username = :owner
         """
-        # 如果输入是4位数字，就当作尾号处理 (在前面加 %)，否则尾号匹配项就填个不存在的值避免误伤
         tail_param = f"%{search_term}" if (len(search_term) == 4 and search_term.isdigit()) else "impossible_match"
-        
         df = run_query(sql, {"term": search_term, "tail": tail_param, "owner": CURRENT_USER})
         
+        # === 分支 A: 找到了 -> 显示充值界面 ===
         if not df.empty:
-            # 如果搜名字可能出现重名，这里默认取第一个。实际商用建议加个列表选择。
-            if len(df) > 1:
-                st.warning(f"⚠️ 找到 {len(df)} 个匹配项，默认显示第一个。建议使用手机号精准查找。")
-            
+            # 默认取第一个匹配项
             row = df.iloc[0]
             m_id, m_name, m_bal, m_disc = int(row['id']), row['name'], float(row['balance']), float(row['current_discount'])
+            m_phone = row['phone']
+
+            st.success(f"✅ 找到会员: **{m_name}** ({m_phone})")
+            st.info(f"当前余额: **¥{m_bal}** | 当前折扣: **{int(m_disc*100) if m_disc<1 else '无'}**")
             
-            st.info(f"会员: **{m_name}** | 余额: **¥{m_bal}** | 折扣: **{int(m_disc*100) if m_disc<1 else '无'}**")
+            st.divider()
+            st.subheader("💸 会员充值")
             
             with st.form("recharge_form"):
                 amount = st.number_input("充值金额", step=100.0)
@@ -169,9 +135,7 @@ elif menu == "会员充值":
                 else:
                     new_discount = float(selected_option)
 
-                confirm = st.form_submit_button("确认充值")
-                
-                if confirm:
+                if st.form_submit_button("确认充值"):
                     new_bal = m_bal + amount
                     run_transaction("UPDATE accounts SET balance = :bal, current_discount = :disc WHERE member_id = :mid",
                                     {"bal": new_bal, "disc": new_discount, "mid": m_id})
@@ -183,8 +147,67 @@ elif menu == "会员充值":
                     st.success("充值成功！")
                     time.sleep(1)
                     st.rerun()
+
+        # === 分支 B: 没找到 -> 显示新建界面 (自动带入开卡充值) ===
         else:
-            st.warning("未找到会员")
+            st.warning(f"⚠️ 未找到 '{search_term}'，请录入新会员")
+            
+            with st.form("new_member_form"):
+                col1, col2 = st.columns(2)
+                # 如果搜索的是手机号，自动填入
+                default_phone = search_term if search_term.isdigit() and len(search_term) >= 7 else ""
+                name = col1.text_input("姓名")
+                phone = col2.text_input("手机号", value=default_phone)
+                birthday = st.date_input("生日", value=datetime(2000, 1, 1), min_value=datetime(1950, 1, 1))
+                note = st.text_area("备注")
+                
+                st.divider()
+                st.write("**💰 开卡设置 (选填)**")
+                initial_amount = st.number_input("开卡充值金额 (¥)", min_value=0.0, step=100.0)
+                initial_discount = st.selectbox("开卡折扣", [1.0, 0.95, 0.9, 0.88, 0.8, 0.7, 0.6], 
+                                              format_func=lambda x: "原价" if x==1.0 else f"{int(x*100) if x*100%10!=0 else int(x*10)}折")
+
+                submitted = st.form_submit_button("➕ 创建并开卡")
+                
+                if submitted:
+                    if not name or not phone:
+                        st.error("姓名和手机号必填！")
+                    else:
+                        try:
+                            # 1. 插入会员
+                            sql_member = """
+                                INSERT INTO members (name, phone, birthday, note, owner_username) 
+                                VALUES (:name, :phone, :birthday, :note, :owner)
+                            """
+                            run_transaction(sql_member, {
+                                "name": name, "phone": phone, 
+                                "birthday": birthday, "note": note, "owner": CURRENT_USER
+                            })
+
+                            # 2. 获取新ID
+                            df_new = run_query("SELECT id FROM members WHERE phone = :phone AND owner_username = :owner", 
+                                           {"phone": phone, "owner": CURRENT_USER})
+                            m_id = int(df_new.iloc[0]['id'])
+
+                            # 3. 插入账户 (带初始余额)
+                            run_transaction("INSERT INTO accounts (member_id, balance, current_discount) VALUES (:mid, :bal, :disc)", 
+                                            {"mid": m_id, "bal": initial_amount, "disc": initial_discount})
+                            
+                            # 4. 如果有充值，记录流水
+                            if initial_amount > 0:
+                                run_transaction(
+                                    """INSERT INTO transactions (member_id, type, amount, detail, date, owner_username) 
+                                    VALUES (:mid, 'RECHARGE', :amt, :detail, NOW(), :owner)""",
+                                    {"mid": m_id, "amt": initial_amount, "detail": f"开卡充值{initial_amount}, 初始折扣{initial_discount}", "owner": CURRENT_USER}
+                                )
+
+                            st.success(f"🎉 会员 {name} 创建成功！(余额: ¥{initial_amount})")
+                            time.sleep(1)
+                            st.rerun()
+                            
+                        except Exception as e:
+                            st.error(f"创建失败 (可能是手机号重复): {e}")       
+
             
 # ==========================
 # 功能 C: 消费结账 (实时计算 + 模糊搜索)
@@ -198,7 +221,7 @@ elif menu == "消费结账":
             SELECT m.id, m.name, a.balance, a.current_discount 
             FROM members m 
             JOIN accounts a ON m.id = a.member_id 
-            WHERE (m.phone = :term OR m.name = :term OR m.phone LIKE :tail)
+            WHERE (m.phone = :term OR m.name ILIKE :term OR m.phone LIKE :tail)
             AND m.owner_username = :owner
         """
         tail_param = f"%{search_term}" if (len(search_term) == 4 and search_term.isdigit()) else "impossible_match"
@@ -284,7 +307,7 @@ elif menu == "消费结账":
             st.warning("未找到会员 (请尝试全号、尾号或姓名)")
 
 # ==========================
-# 功能: 会员查询/修改 (花名册模式)
+# 功能: 会员查询/修改 (全能编辑版)
 # ==========================
 elif menu == "会员查询/修改":
     st.header("🔍 会员档案管理")
@@ -292,7 +315,7 @@ elif menu == "会员查询/修改":
     # 1. 搜索框
     search_term = st.text_input("搜索会员 (支持姓名/全号/尾号)", placeholder="留空则显示全部会员").strip()
     
-    # 2. 构造 SQL (默认查所有，有搜索词则加筛选)
+    # 2. 构造 SQL
     sql = """
         SELECT m.id, m.name, m.phone, m.birthday, m.note, m.created_at, 
                a.balance, a.current_discount 
@@ -303,75 +326,92 @@ elif menu == "会员查询/修改":
     params = {"owner": CURRENT_USER}
     
     if search_term:
-        sql += " AND (m.phone = :term OR m.name = :term OR m.phone LIKE :tail)"
+        sql += " AND (m.phone = :term OR m.name ILIKE :term OR m.phone LIKE :tail)"
         params["term"] = search_term
-        # 如果是4位数字，当做尾号处理
         params["tail"] = f"%{search_term}" if (len(search_term)==4 and search_term.isdigit()) else "impossible_match"
     
-    # 按注册时间倒序排列 (新的在前面)
     sql += " ORDER BY m.id DESC"
-    
     df = run_query(sql, params)
     
-    # 3. 界面展示逻辑
+    # 3. 界面逻辑
     if df.empty:
         st.info("暂无数据")
     else:
-        # --- 情况 A: 刚好锁定 1 个人 -> 显示详情卡片 + 修改界面 ---
+        # --- 情况 A: 刚好锁定 1 个人 -> 进入【全能编辑模式】 ---
         if len(df) == 1:
             row = df.iloc[0]
             m_id = int(row['id'])
             
-            st.success(f"已锁定会员: **{row['name']}**")
+            st.success(f"正在编辑: **{row['name']}**")
             
-            # 详情卡片
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write(f"📱 **手机:** {row['phone']}")
-                st.write(f"🎂 **生日:** {row['birthday']}")
-                reg_date = pd.to_datetime(row['created_at']).strftime('%Y-%m-%d')
-                st.caption(f"注册日期: {reg_date}")
-            
-            with col2:
-                bal = row['balance'] if row['balance'] is not None else 0
-                disc = row['current_discount'] if row['current_discount'] is not None else 1.0
-                st.metric("当前余额", f"¥{bal}")
-                st.metric("权益等级", f"{int(disc*100)}折" if disc < 1 else "无折扣")
+            with st.form("edit_full_profile"):
+                st.caption("👇 您可以在下方直接修改任何信息")
+                
+                # 第一行：基本资料
+                c1, c2 = st.columns(2)
+                new_name = c1.text_input("姓名", value=row['name'])
+                new_phone = c2.text_input("手机号", value=row['phone'])
+                
+                # 第二行：生日与余额
+                c3, c4 = st.columns(2)
+                # 处理生日格式，防止空值报错
+                try:
+                    default_birth = pd.to_datetime(row['birthday']).date()
+                except:
+                    default_birth = datetime(2000, 1, 1)
+                new_birth = c3.date_input("生日", value=default_birth, min_value=datetime(1900, 1, 1))
+                
+                # 余额修改 (特别标注)
+                current_bal = float(row['balance']) if row['balance'] is not None else 0.0
+                new_balance = c4.number_input("账户余额 (¥)", value=current_bal, step=10.0, help="可以直接修改余额进行平账")
+                
+                # 第三行：备注
+                new_note = st.text_area("备注", value=row['note'] if row['note'] else "", height=100)
+                
+                # 保存按钮
+                if st.form_submit_button("💾 保存所有修改", type="primary"):
+                    try:
+                        # 1. 更新 members 表 (基本信息)
+                        # 注意：这里加上 owner 限制，防止误改
+                        sql_member = """
+                            UPDATE members 
+                            SET name = :name, phone = :phone, birthday = :birth, note = :note 
+                            WHERE id = :mid AND owner_username = :owner
+                        """
+                        run_transaction(sql_member, {
+                            "name": new_name, "phone": new_phone, 
+                            "birth": new_birth, "note": new_note, 
+                            "mid": m_id, "owner": CURRENT_USER
+                        })
+                        
+                        # 2. 更新 accounts 表 (余额)
+                        sql_account = "UPDATE accounts SET balance = :bal WHERE member_id = :mid"
+                        run_transaction(sql_account, {"bal": new_balance, "mid": m_id})
+                        
+                        st.success("✅ 档案已更新！")
+                        time.sleep(1)
+                        st.rerun()
+                        
+                    except Exception as e:
+                        # 捕捉手机号重复的错误
+                        if "UniqueViolation" in str(e) or "unique constraint" in str(e):
+                            st.error(f"保存失败：手机号 {new_phone} 已存在，请检查！")
+                        else:
+                            st.error(f"保存失败: {e}")
 
-            st.divider()
-            
-            # 修改备注表单
-            st.subheader("📝 修改档案")
-            with st.form("edit_note"):
-                new_note = st.text_area("备注内容", value=row['note'] if row['note'] else "", height=100)
-                if st.form_submit_button("💾 保存修改"):
-                    run_transaction("UPDATE members SET note = :note WHERE id = :mid AND owner_username = :owner",
-                                    {"note": new_note, "mid": m_id, "owner": CURRENT_USER})
-                    st.success("已更新！")
-                    time.sleep(1)
-                    st.rerun()
-            
-            # 加个小按钮方便退回列表
+            # 返回按钮
             if st.button("🔙 返回列表"):
-                 # Streamlit的trick: 虽然不能直接清空输入框，但刷新可以重置状态
-                 # 或者这里什么都不做，用户自己删掉搜索词也行
                  st.rerun()
 
-        # --- 情况 B: 多人 (或全部) -> 显示表格清单 ---
+        # --- 情况 B: 多人 -> 显示表格 ---
         else:
             st.write(f"共找到 **{len(df)}** 位会员")
-            
-            # 整理一下表格显示的列名，让它好看点
             display_df = df[['name', 'phone', 'balance', 'note', 'created_at']].copy()
             display_df.columns = ['姓名', '手机号', '余额', '备注', '注册时间']
-            
-            # 简单的格式化
             display_df['余额'] = display_df['余额'].fillna(0).apply(lambda x: f"¥{x}")
             display_df['注册时间'] = pd.to_datetime(display_df['注册时间']).dt.strftime('%Y-%m-%d')
-            
             st.dataframe(display_df, use_container_width=True, hide_index=True)
-            
-            st.caption("💡 提示：输入精准的 **姓名** 或 **手机号** 即可进入编辑模式。")
+            st.caption("💡 提示：输入 **姓名** 或 **手机号** 锁定一人后，即可修改全部资料。")
 # ==========================
 # 功能 D: 账目查询 (优化日期显示)
 # ==========================
