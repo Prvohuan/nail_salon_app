@@ -8,7 +8,8 @@ from io import BytesIO
 from PIL import Image
 import time
 import altair as alt
-import extra_streamlit_components as stx # 确保这行还在
+import extra_streamlit_components as stx
+import qrcode
 
 # --- 1. 页面配置 ---
 st.set_page_config(page_title="美甲店SaaS系统", page_icon="💅")
@@ -181,6 +182,19 @@ SHOP_NAME = st.session_state.shop_name
 
 st.sidebar.divider()
 st.sidebar.write(f"🏠 **{SHOP_NAME}**")
+
+with st.sidebar.expander("📱 店铺二维码"):
+    # 这里填你部署好的 Streamlit 真实网址
+    shop_url = "https://nailsalonapp-4t6pup4wfnyg4kydappinix.streamlit.app/" 
+    
+    # 生成二维码
+    qr = qrcode.QRCode(version=1, box_size=10, border=5)
+    qr.add_data(shop_url)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    
+    # 显示
+    st.image(img, caption="顾客扫码自助查询", use_container_width=True)
 
 # 退出登录逻辑
 if st.sidebar.button("退出登录"):

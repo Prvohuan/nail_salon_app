@@ -4,3 +4,4 @@ sqlalchemy
 psycopg2-binary
 streamlit-drawable-canvas
 extra-streamlit-components
+qrcode
