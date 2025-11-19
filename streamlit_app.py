@@ -7,6 +7,7 @@ import base64
 from io import BytesIO
 from PIL import Image
 import time
+import altair as alt # 引入绘图库
 
 # --- 1. 页面配置 ---
 st.set_page_config(page_title="美甲店SaaS系统", page_icon="💅")
@@ -32,8 +33,73 @@ def process_signature(image_data):
     return base64.b64encode(buffered.getvalue()).decode()
 
 # ===================================
-# 🔐 多用户登录逻辑 (关键修改)
+# 🏠 身份选择入口 (新功能)
 # ===================================
+st.sidebar.title("💅 美甲服务")
+role = st.sidebar.radio("请选择您的身份", ["我是店主 (商家管理)", "我是顾客 (自助查询)"])
+
+# ===================================
+# 👤 分支 A: 顾客自助查询逻辑
+# ===================================
+if role == "我是顾客 (自助查询)":
+    st.title("👤 会员自助查询")
+    st.info("请输入您的 姓名 和 手机号 查询余额及记录")
+    
+    with st.form("customer_check_form"):
+        c1, c2 = st.columns(2)
+        cust_name = c1.text_input("您的姓名").strip()
+        cust_phone = c2.text_input("您的手机号").strip()
+        submit = st.form_submit_button("🔍 立即查询")
+        
+        if submit:
+            if not cust_name or not cust_phone:
+                st.error("请填写完整信息")
+            else:
+                # 关联查询：会员表 + 账户表 + 店铺表 (为了显示是哪家店的会员)
+                sql = """
+                    SELECT m.id, m.name, a.balance, s.shop_name, a.current_discount
+                    FROM members m
+                    JOIN accounts a ON m.id = a.member_id
+                    JOIN shop_owners s ON m.owner_username = s.username
+                    WHERE m.phone = :phone AND m.name = :name
+                """
+                df = run_query(sql, {"phone": cust_phone, "name": cust_name})
+                
+                if df.empty:
+                    st.warning("未查询到会员信息，请检查姓名和手机号是否一致。")
+                else:
+                    for i, row in df.iterrows():
+                        m_id = int(row['id'])
+                        st.success(f"🏠 **{row['shop_name']}** 会员")
+                        
+                        # 卡片展示
+                        col1, col2 = st.columns(2)
+                        col1.metric("当前余额", f"¥{row['balance']}")
+                        disc = row['current_discount']
+                        col2.metric("享受权益", f"{int(disc*100)}折" if disc < 1 else "无折扣")
+                        
+                        # 最近流水
+                        st.write("📝 **最近5笔交易:**")
+                        trans_sql = "SELECT date, type, amount, detail FROM transactions WHERE member_id = :mid ORDER BY id DESC LIMIT 5"
+                        trans_df = run_query(trans_sql, {"mid": m_id})
+                        
+                        if not trans_df.empty:
+                            # 简单美化
+                            trans_display = trans_df.copy()
+                            trans_display.columns = ['时间', '类型', '金额', '详情']
+                            trans_display['时间'] = pd.to_datetime(trans_display['时间']).dt.strftime('%Y-%m-%d')
+                            st.dataframe(trans_display, hide_index=True, use_container_width=True)
+                        else:
+                            st.caption("暂无记录")
+                        st.divider()
+    
+    # ⛔️ 顾客止步，不再运行后面的商家代码
+    st.stop()
+
+# ===================================
+# 🔐 分支 B: 商家登录逻辑
+# ===================================
+# 初始化 session
 if "current_user" not in st.session_state:
     st.session_state.current_user = None
 if "shop_name" not in st.session_state:
@@ -43,15 +109,13 @@ def check_login():
     if st.session_state.current_user:
         return True
     
-    st.header("🔐 美甲店管家 - 商家登录")
+    st.header("🔐 商家后台登录")
     with st.form("login_form"):
-        # 这里输入你在 Supabase 插入的 username (比如 amy) 和 password
-        username = st.text_input("商家账号")
-        password = st.text_input("密码", type="password")
+        username = st.text_input("商家账号").strip()
+        password = st.text_input("密码", type="password").strip()
         submit = st.form_submit_button("登录")
         
         if submit:
-            # 查询 shop_owners 表
             try:
                 sql = "SELECT * FROM shop_owners WHERE username = :u AND password = :p"
                 df = run_query(sql, {"u": username, "p": password})
@@ -64,25 +128,23 @@ def check_login():
                 else:
                     st.error("账号或密码错误")
             except Exception as e:
-                st.error(f"数据库连接失败，请检查是否已创建 shop_owners 表。错误: {e}")
+                st.error(f"登录失败: {e}")
     return False
 
 if not check_login():
-    st.stop() # 未登录则停止运行
+    st.stop()
 
-# 获取当前老板是谁，后续所有SQL都要用到它！
+# 商家登录后的全局变量
 CURRENT_USER = st.session_state.current_user
 SHOP_NAME = st.session_state.shop_name
 
-# ===================================
-# 💅 主程序开始
-# ===================================
-
-st.sidebar.title(f"🏠 {SHOP_NAME}")
-st.sidebar.write(f"当前用户: {CURRENT_USER}")
+st.sidebar.divider()
+st.sidebar.write(f"🏠 **{SHOP_NAME}**")
 if st.sidebar.button("退出登录"):
     st.session_state.current_user = None
     st.rerun()
+
+# 接原本的菜单代码...
 
 menu = st.sidebar.radio("功能菜单", ["消费结账", "会员充值", "会员管理", "账目查询"])
 st.title(f"💅 {menu}")
@@ -413,14 +475,12 @@ elif menu == "会员管理":
             st.dataframe(display_df, use_container_width=True, hide_index=True)
             st.caption("💡 提示：输入 **姓名** 或 **手机号** 锁定一人后，即可修改全部资料。")
 # ==========================
-# 功能 D: 账目查询 (Altair 分组柱状图版 - 再次修正)
+# 功能 D: 账目查询 (分组柱状图版)
 # ==========================
-elif menu == "账目查询":
+if menu == "账目查询":
     st.header("📊 经营数据分析")
     
-    import altair as alt # 确保 altair 已导入
-    
-    # --- 1. 顶部图表：近7天经营趋势 (分组柱状图) ---
+    # --- 1. 顶部图表：近7天收支 (左右并排) ---
     st.subheader("📈 近7天经营趋势")
     
     chart_sql = """
@@ -434,76 +494,59 @@ elif menu == "账目查询":
     chart_df = run_query(chart_sql, {"owner": CURRENT_USER})
     
     if not chart_df.empty:
+        # 数据映射：英文转中文
         chart_df['type_cn'] = chart_df['type'].map({'RECHARGE': '充值收入', 'SPEND': '消费扣款'})
         
-        # 确保所有日期都有充值和消费两行，没有数据的填0，防止柱子缺失
-        # 获取所有日期
+        # 补全日期（防止某天没数据导致柱子缺失）
         all_days = pd.date_range(end=datetime.now().date(), periods=7, freq='D')
         all_types = ['充值收入', '消费扣款']
-        
-        # 创建一个完整的日期-类型组合
         full_index = pd.MultiIndex.from_product([all_days, all_types], names=['day', 'type_cn'])
-        
-        # 将原始数据重新索引，缺失值填0
         chart_df_pivot = chart_df.set_index(['day', 'type_cn'])['total'].reindex(full_index, fill_value=0).reset_index()
-        
-        # 确保日期格式正确， Altair 需要日期类型
         chart_df_pivot['day'] = pd.to_datetime(chart_df_pivot['day'])
 
+        # 使用 Altair 画分组图
         chart = alt.Chart(chart_df_pivot).mark_bar().encode(
-            # X轴：类型 (充值/消费)，在每个日期组内左右排开
+            # X轴：类型 (充值/消费)，并隐藏轴标题
             x=alt.X('type_cn:N', axis=alt.Axis(title=None, labels=True)),
             
             # Y轴：金额
             y=alt.Y('total:Q', axis=alt.Axis(title='金额 (¥)')),
             
-            # 颜色：根据类型变色
+            # 颜色：红绿区分
             color=alt.Color('type_cn:N', 
                             scale=alt.Scale(domain=['消费扣款', '充值收入'], range=['#FF4B4B', '#00C805']),
                             legend=alt.Legend(title="类型")),
             
-            # 【关键】列：按日期分组 (每个日期显示一组柱子)
+            # 【关键】Column：按日期分列，实现分组效果
             column=alt.Column('day:T', 
                               header=alt.Header(titleOrient="bottom", labelOrient="bottom", format='%m-%d'),
-                              title='日期'), # 在每个小图的标题显示日期
+                              title='日期'),
             
-            # 鼠标悬停提示
             tooltip=[
                 alt.Tooltip('day:T', title='日期', format='%Y-%m-%d'),
                 alt.Tooltip('type_cn:N', title='类型'),
                 alt.Tooltip('total:Q', title='金额')
             ]
-        ).properties(
-            height=300 # 图表高度
-        ).configure_header(
-            titleFontSize=14,
-            labelFontSize=12
-        ).configure_axis(
-            labelFontSize=10, # 调整 x 轴标签字体大小
-            titleFontSize=12  # 调整 y 轴标签字体大小
-        )
+        ).properties(height=300).configure_axis(labelFontSize=10).configure_header(labelFontSize=12)
         
         st.altair_chart(chart, use_container_width=True)
-        
     else:
         st.caption("最近7天暂无数据")
         
     st.divider()
 
-    # --- 2. 查询过滤器 ---
+    # --- 2. 详细查询 ---
     st.subheader("🔍 详细账目查询")
     
     col1, col2 = st.columns([1, 2])
     with col1:
-        # 搜索框
         search_term = st.text_input("👤 搜索会员 (姓名/全号/尾号)").strip()
     with col2:
-        # 日期范围 (默认本月)
         today = datetime.now()
         first_day = today.replace(day=1)
         date_range = st.date_input("📅 选择日期范围", value=(first_day, today))
 
-    # --- 3. 构造查询 SQL ---
+    # 构造查询 SQL
     sql = """
         SELECT t.date, m.name, m.phone, t.type, t.amount, t.detail, t.signature
         FROM transactions t
@@ -512,61 +555,43 @@ elif menu == "账目查询":
     """
     params = {"owner": CURRENT_USER}
 
-    # 加入搜索条件
     if search_term:
         sql += " AND (m.phone = :term OR m.name ILIKE :term OR m.phone LIKE :tail)"
         params["term"] = search_term
         params["tail"] = f"%{search_term}" if (len(search_term)==4 and search_term.isdigit()) else "impossible_match"
 
-    # 加入日期条件
-    # st.date_input 返回的是一个元组，可能只有开始日期，也可能都有
     if isinstance(date_range, tuple):
         if len(date_range) > 0:
             sql += " AND t.date >= :start_date"
             params["start_date"] = date_range[0]
         if len(date_range) > 1:
-            # 结束日期要加一天，因为数据库存的是 '2023-11-20 12:00'，而查询 '2023-11-20' 默认是0点
-            # 所以要查到 '2023-11-21 00:00' 之前
             import datetime as dt
             end_date = date_range[1] + dt.timedelta(days=1)
             sql += " AND t.date < :end_date"
             params["end_date"] = end_date
 
     sql += " ORDER BY t.id DESC"
-    
-    # 执行查询
     df = run_query(sql, params)
     
-    # --- 4. 统计卡片 (基于筛选结果) ---
+    # 统计栏
     if not df.empty:
-        # 计算合计
         total_recharge = df[df['type'] == 'RECHARGE']['amount'].sum()
         total_spend = df[df['type'] == 'SPEND']['amount'].sum()
-        
-        # 展示统计
         m1, m2, m3 = st.columns(3)
         m1.metric("笔数", f"{len(df)} 笔")
-        m2.metric("充值合计 (收入)", f"¥{total_recharge:,.2f}")
-        m3.metric("消费合计 (消耗)", f"¥{total_spend:,.2f}")
+        m2.metric("充值合计", f"¥{total_recharge:,.2f}")
+        m3.metric("消费合计", f"¥{total_spend:,.2f}")
         
-        # --- 5. 详细列表 ---
         st.write("---")
         for i, row in df.iterrows():
-            # 日期格式化
             try:
                 fmt_date = pd.to_datetime(row['date']).strftime('%Y-%m-%d %H:%M:%S')
-            except:
-                fmt_date = row['date']
+            except: fmt_date = row['date']
             
-            # 定义图标
             icon = "💰" if row['type'] == 'RECHARGE' else "💅"
-            color = "green" if row['type'] == 'RECHARGE' else "red"
-            
-            with st.expander(f"{icon} {fmt_date} | {row['name']} | :{'green' if row['type']=='RECHARGE' else 'red'}[¥{row['amount']}]"):
-                st.write(f"**手机:** {row['phone']}")
+            with st.expander(f"{icon} {fmt_date} | {row['name']} | ¥{row['amount']}"):
                 st.write(f"**详情:** {row['detail']}")
                 if row['signature']:
-                    st.write("**签字确认:**")
                     st.image(base64.b64decode(row['signature']), width=200)
     else:
-        st.info("在此筛选条件下暂无数据")
+        st.info("暂无数据")
