@@ -8,7 +8,7 @@ from io import BytesIO
 from PIL import Image
 import time
 import altair as alt
-import extra_streamlit_components as stx # 引入 Cookie 管理库
+import extra_streamlit_components as stx # 确保这行还在
 
 # --- 1. 页面配置 ---
 st.set_page_config(page_title="美甲店SaaS系统", page_icon="💅")
@@ -33,12 +33,11 @@ def process_signature(image_data):
     img.save(buffered, format="PNG")
     return base64.b64encode(buffered.getvalue()).decode()
 
-# 初始化 Cookie 管理器 (使用缓存防止重复加载)
-@st.cache_resource(experimental_allow_widgets=True)
-def get_manager():
-    return stx.CookieManager()
-
-cookie_manager = get_manager()
+# ===================================
+# 🍪 Cookie 管理器初始化 (修复版)
+# ===================================
+# 注意：这里去掉了 @st.cache_resource，直接初始化，解决了 TypeError 报错
+cookie_manager = stx.CookieManager()
 
 # ===================================
 # 🏠 身份选择入口
@@ -46,9 +45,8 @@ cookie_manager = get_manager()
 st.sidebar.title("💅 美甲服务")
 
 # 获取 cookie 中的身份信息 (如果有)
+# 注意：get() 方法有时会有延迟，这是正常的
 cookie_auth = cookie_manager.get("saas_auth")
-default_index = 0
-# 如果 cookie 里记录的是顾客，尝试自动切到顾客视角(可选优化，这里先简单处理)
 
 role = st.sidebar.radio("请选择您的身份", ["我是店主 (商家管理)", "我是顾客 (自助查询)"])
 
@@ -103,7 +101,6 @@ if role == "我是顾客 (自助查询)":
                             st.dataframe(trans_display, hide_index=True, use_container_width=True)
                         else:
                             st.caption("暂无交易记录")
-                        
                         st.divider()
     st.stop()
 
@@ -132,18 +129,18 @@ def check_login():
         return True
 
     # 2. 如果 session 没有，检查浏览器 Cookie
-    # Cookie 格式我们存为 "username|password" (实际生产建议加密，这里简单处理)
     if cookie_auth:
         try:
+            # 尝试解析 cookie
             c_user, c_pass = cookie_auth.split("|")
             shop = verify_user(c_user, c_pass)
             if shop:
                 st.session_state.current_user = c_user
                 st.session_state.shop_name = shop
                 st.toast(f"欢迎回来，{shop} (免密登录成功)")
+                time.sleep(0.5) # 等待一小会确保状态同步
                 return True
         except:
-            # Cookie 格式不对或验证失败，忽略
             pass
 
     # 3. 如果都没有，显示登录界面
@@ -163,10 +160,9 @@ def check_login():
                 
                 # 如果勾选了记住我，设置 Cookie
                 if remember_me:
-                    # 设置过期时间为 30 天后
                     expires = datetime.now() + timedelta(days=30)
-                    # 存入 username|password
                     cookie_val = f"{username}|{password}"
+                    # 写入 Cookie
                     cookie_manager.set("saas_auth", cookie_val, expires_at=expires)
                 
                 st.success("登录成功！")
@@ -186,7 +182,7 @@ SHOP_NAME = st.session_state.shop_name
 st.sidebar.divider()
 st.sidebar.write(f"🏠 **{SHOP_NAME}**")
 
-# 退出登录逻辑升级：同时清理 Cookie
+# 退出登录逻辑
 if st.sidebar.button("退出登录"):
     st.session_state.current_user = None
     # 删除 Cookie
