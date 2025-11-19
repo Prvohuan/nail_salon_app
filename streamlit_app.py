@@ -125,22 +125,31 @@ if menu == "新建会员":
                 st.error(f"创建失败 (可能手机号已存在): {e}")
 
 # ==========================
-# 功能 B: 会员充值
+# 功能 B: 会员充值 (支持姓名/尾号)
 # ==========================
 elif menu == "会员充值":
-    phone_search = st.text_input("输入手机号查找")
+    search_term = st.text_input("搜索会员 (支持: 姓名 / 手机全号 / 手机后4位)").strip()
     
-    if phone_search:
-        # 【关键修改】查询加 AND owner_username = :owner
+    if search_term:
+        # 智能构造 SQL：支持 手机全号 OR 姓名 OR 手机尾号
+        # 注意：Postgres 的 text 类型默认区分大小写，这里暂时不做忽略大小写处理，假设输入准确
         sql = """
             SELECT m.id, m.name, a.balance, a.current_discount 
             FROM members m 
             JOIN accounts a ON m.id = a.member_id 
-            WHERE m.phone = :phone AND m.owner_username = :owner
+            WHERE (m.phone = :term OR m.name = :term OR m.phone LIKE :tail)
+            AND m.owner_username = :owner
         """
-        df = run_query(sql, {"phone": phone_search, "owner": CURRENT_USER})
+        # 如果输入是4位数字，就当作尾号处理 (在前面加 %)，否则尾号匹配项就填个不存在的值避免误伤
+        tail_param = f"%{search_term}" if (len(search_term) == 4 and search_term.isdigit()) else "impossible_match"
+        
+        df = run_query(sql, {"term": search_term, "tail": tail_param, "owner": CURRENT_USER})
         
         if not df.empty:
+            # 如果搜名字可能出现重名，这里默认取第一个。实际商用建议加个列表选择。
+            if len(df) > 1:
+                st.warning(f"⚠️ 找到 {len(df)} 个匹配项，默认显示第一个。建议使用手机号精准查找。")
+            
             row = df.iloc[0]
             m_id, m_name, m_bal, m_disc = int(row['id']), row['name'], float(row['balance']), float(row['current_discount'])
             
@@ -166,7 +175,6 @@ elif menu == "会员充值":
                     new_bal = m_bal + amount
                     run_transaction("UPDATE accounts SET balance = :bal, current_discount = :disc WHERE member_id = :mid",
                                     {"bal": new_bal, "disc": new_discount, "mid": m_id})
-                    # 【关键修改】流水记录加 owner_username
                     run_transaction(
                         """INSERT INTO transactions (member_id, type, amount, detail, date, owner_username) 
                            VALUES (:mid, 'RECHARGE', :amt, :detail, NOW(), :owner)""",
@@ -177,22 +185,24 @@ elif menu == "会员充值":
                     st.rerun()
         else:
             st.warning("未找到会员")
-
+            
 # ==========================
-# 功能 C: 消费结账
+# 功能 C: 消费结账 (实时计算 + 模糊搜索)
 # ==========================
 elif menu == "消费结账":
-    phone_search = st.text_input("输入手机号")
+    search_term = st.text_input("搜索会员 (姓名 / 手机全号 / 尾号4位)").strip()
     
-    if phone_search:
-        # 【关键修改】增加 owner 限制
+    if search_term:
+        # 同样的模糊搜索逻辑
         sql = """
             SELECT m.id, m.name, a.balance, a.current_discount 
             FROM members m 
             JOIN accounts a ON m.id = a.member_id 
-            WHERE m.phone = :phone AND m.owner_username = :owner
+            WHERE (m.phone = :term OR m.name = :term OR m.phone LIKE :tail)
+            AND m.owner_username = :owner
         """
-        df = run_query(sql, {"phone": phone_search, "owner": CURRENT_USER})
+        tail_param = f"%{search_term}" if (len(search_term) == 4 and search_term.isdigit()) else "impossible_match"
+        df = run_query(sql, {"term": search_term, "tail": tail_param, "owner": CURRENT_USER})
         
         if not df.empty:
             row = df.iloc[0]
@@ -204,7 +214,7 @@ elif menu == "消费结账":
             col3.metric("权益", f"{int(m_disc*100)}折" if m_disc < 1 else "原价")
             st.divider()
 
-            # 菜单定义
+            # --- 1. 选择项目 (保持不变) ---
             MENU_DATA = {
                 "🖐️ 手部": ["卸甲", "修补", "延长", "款式", "饰品"],
                 "👁️ 睫毛": ["卸睫毛", "漫画款", "婴儿弯", "YY单根", "设计款", "蛋白矫正"],
@@ -215,7 +225,6 @@ elif menu == "消费结账":
             st.subheader("1. 选择项目")
             selected_categories = st.multiselect("服务大类", options=list(MENU_DATA.keys()))
             final_item_list = []
-            
             if selected_categories:
                 st.write("👇 **勾选细项:**")
                 for cat in selected_categories:
@@ -232,13 +241,21 @@ elif menu == "消费结账":
             if final_detail_string: st.info(f"🛒 已选: {final_detail_string}")
             st.write("---")
 
+            # --- 2. 金额确认 (重点修改区域) ---
+            st.subheader("2. 确认金额")
+            
+            # ⚠️ 移出 form，实现实时计算
+            price = st.number_input("订单原价 (输入后回车)", min_value=0.0, step=10.0)
+            final_price = price * m_disc
+            
+            # 实时显示大红字价格
+            st.markdown(f"### 应扣款: <span style='color:red'>¥{final_price:.2f}</span>", unsafe_allow_html=True)
+
+            # --- 3. 签字提交 (放进 form 防止误触) ---
             with st.form("pay_form"):
-                st.subheader("2. 确认金额与签字")
-                price = st.number_input("订单原价", min_value=0.0, step=10.0)
-                final_price = price * m_disc
-                st.markdown(f"### 应扣款: <span style='color:red'>¥{final_price:.2f}</span>", unsafe_allow_html=True)
-                
+                st.write("请顾客签字 👇")
                 canvas_result = st_canvas(fill_color="rgba(255, 165, 0, 0.3)", stroke_width=2, background_color="#EEE", height=150, key="canvas_spend")
+                
                 submit = st.form_submit_button("✅ 确认扣款", type="primary")
                 
                 if submit:
@@ -252,7 +269,6 @@ elif menu == "消费结账":
                         run_transaction("UPDATE accounts SET balance = :bal WHERE member_id = :mid",
                                         {"bal": m_bal - final_price, "mid": m_id})
                         
-                        # 【关键修改】流水增加 owner_username
                         run_transaction(
                             """INSERT INTO transactions (member_id, type, amount, detail, date, signature, owner_username) 
                                VALUES (:mid, 'SPEND', :amt, :detail, NOW(), :sig, :owner)""",
@@ -265,7 +281,7 @@ elif menu == "消费结账":
                     else:
                         st.error("余额不足")
         else:
-            st.warning("未找到会员")
+            st.warning("未找到会员 (请尝试全号、尾号或姓名)")
 
 # ==========================
 # 功能: 会员查询/修改
@@ -277,7 +293,7 @@ elif menu == "会员查询/修改":
         sql = """
             SELECT m.id, m.name, m.phone, m.birthday, m.note, m.created_at, a.balance, a.current_discount 
             FROM members m LEFT JOIN accounts a ON m.id = a.member_id 
-            WHERE m.phone = :phone AND m.owner_username = :owner
+            WHERE (m.phone = :term OR m.name = :term OR m.phone LIKE :tail)
         """
         df = run_query(sql, {"phone": phone_search, "owner": CURRENT_USER})
         
@@ -305,8 +321,11 @@ elif menu == "会员查询/修改":
 # ==========================
 # 功能 D: 账目查询
 # ==========================
+# ==========================
+# 功能 D: 账目查询 (优化日期显示)
+# ==========================
 elif menu == "账目查询":
-    # 【关键修改】只查属于当前 owner 的流水
+    st.header("📊 账目流水")
     sql = """
         SELECT t.date, m.name, t.type, t.amount, t.detail, t.signature
         FROM transactions t
@@ -318,9 +337,19 @@ elif menu == "账目查询":
     
     if not df.empty:
         for i, row in df.iterrows():
-            with st.expander(f"{row['date']} - {row['name']} - ¥{row['amount']}"):
-                st.write(f"详情: {row['detail']}")
+            # 【关键修改】格式化日期
+            # 先转成 datetime 对象，再格式化为 "年-月-日 时:分:秒"
+            try:
+                fmt_date = pd.to_datetime(row['date']).strftime('%Y-%m-%d %H:%M:%S')
+            except:
+                fmt_date = row['date'] # 如果转换失败就显示原样
+            
+            # 标题显示：时间 - 姓名 - 金额
+            with st.expander(f"{fmt_date} | {row['name']} | ¥{row['amount']}"):
+                st.write(f"**类型:** {row['type']}")
+                st.write(f"**详情:** {row['detail']}")
                 if row['signature']:
+                    st.write("**签字:**")
                     st.image(base64.b64decode(row['signature']), width=200)
     else:
         st.info("暂无数据")
