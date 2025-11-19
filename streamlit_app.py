@@ -555,7 +555,7 @@ if menu == "账目查询":
             x=alt.X('day:T', axis=alt.Axis(title='日期', format='%m-%d')),
             
             # Y轴：金额
-            y=alt.Y('total:Q', axis=alt.Axis(title='金额 (¥)')),
+            y=alt.Y('total:Q', axis=alt.Axis(title='金额 (¥)'),stack=None),
             
             # 颜色：区分充值/消费
             color=alt.Color('type_cn:N', 
