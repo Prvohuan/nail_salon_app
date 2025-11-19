@@ -1,13 +1,14 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from streamlit_drawable_canvas import st_canvas
 from sqlalchemy import text
 import base64
 from io import BytesIO
 from PIL import Image
 import time
-import altair as alt # 引入绘图库
+import altair as alt
+import extra_streamlit_components as stx # 引入 Cookie 管理库
 
 # --- 1. 页面配置 ---
 st.set_page_config(page_title="美甲店SaaS系统", page_icon="💅")
@@ -32,18 +33,31 @@ def process_signature(image_data):
     img.save(buffered, format="PNG")
     return base64.b64encode(buffered.getvalue()).decode()
 
+# 初始化 Cookie 管理器 (使用缓存防止重复加载)
+@st.cache_resource(experimental_allow_widgets=True)
+def get_manager():
+    return stx.CookieManager()
+
+cookie_manager = get_manager()
+
 # ===================================
-# 🏠 身份选择入口 (新功能)
+# 🏠 身份选择入口
 # ===================================
 st.sidebar.title("💅 美甲服务")
+
+# 获取 cookie 中的身份信息 (如果有)
+cookie_auth = cookie_manager.get("saas_auth")
+default_index = 0
+# 如果 cookie 里记录的是顾客，尝试自动切到顾客视角(可选优化，这里先简单处理)
+
 role = st.sidebar.radio("请选择您的身份", ["我是店主 (商家管理)", "我是顾客 (自助查询)"])
 
 # ===================================
-# 👤 分支 A: 顾客自助查询逻辑
+# 👤 分支 A: 顾客自助查询
 # ===================================
 if role == "我是顾客 (自助查询)":
     st.title("👤 会员自助查询")
-    st.info("请输入您的 姓名 和 手机号 查询余额及记录")
+    st.info("输入您的 姓名 和 手机号，即可查询余额及消费记录。")
     
     with st.form("customer_check_form"):
         c1, c2 = st.columns(2)
@@ -55,7 +69,6 @@ if role == "我是顾客 (自助查询)":
             if not cust_name or not cust_phone:
                 st.error("请填写完整信息")
             else:
-                # 关联查询：会员表 + 账户表 + 店铺表 (为了显示是哪家店的会员)
                 sql = """
                     SELECT m.id, m.name, a.balance, s.shop_name, a.current_discount
                     FROM members m
@@ -66,85 +79,121 @@ if role == "我是顾客 (自助查询)":
                 df = run_query(sql, {"phone": cust_phone, "name": cust_name})
                 
                 if df.empty:
-                    st.warning("未查询到会员信息，请检查姓名和手机号是否一致。")
+                    st.warning("未查询到会员信息，请检查姓名和手机号是否与登记的一致。")
                 else:
                     for i, row in df.iterrows():
                         m_id = int(row['id'])
-                        st.success(f"🏠 **{row['shop_name']}** 会员")
-                        
-                        # 卡片展示
-                        col1, col2 = st.columns(2)
-                        col1.metric("当前余额", f"¥{row['balance']}")
+                        shop_name = row['shop_name']
+                        bal = row['balance']
                         disc = row['current_discount']
-                        col2.metric("享受权益", f"{int(disc*100)}折" if disc < 1 else "无折扣")
                         
-                        # 最近流水
-                        st.write("📝 **最近5笔交易:**")
+                        st.success(f"🏠 **{shop_name}** 的会员")
+                        col1, col2 = st.columns(2)
+                        col1.metric("当前余额", f"¥{bal}")
+                        col2.metric("享受折扣", f"{int(disc*100)}折" if disc < 1 else "无折扣")
+                        
+                        st.write("**📝 最近交易记录:**")
                         trans_sql = "SELECT date, type, amount, detail FROM transactions WHERE member_id = :mid ORDER BY id DESC LIMIT 5"
                         trans_df = run_query(trans_sql, {"mid": m_id})
                         
                         if not trans_df.empty:
-                            # 简单美化
                             trans_display = trans_df.copy()
                             trans_display.columns = ['时间', '类型', '金额', '详情']
                             trans_display['时间'] = pd.to_datetime(trans_display['时间']).dt.strftime('%Y-%m-%d')
                             st.dataframe(trans_display, hide_index=True, use_container_width=True)
                         else:
-                            st.caption("暂无记录")
+                            st.caption("暂无交易记录")
+                        
                         st.divider()
-    
-    # ⛔️ 顾客止步，不再运行后面的商家代码
     st.stop()
 
 # ===================================
-# 🔐 分支 B: 商家登录逻辑
+# 🔐 分支 B: 商家登录逻辑 (Cookie版)
 # ===================================
-# 初始化 session
 if "current_user" not in st.session_state:
     st.session_state.current_user = None
 if "shop_name" not in st.session_state:
     st.session_state.shop_name = ""
 
+def verify_user(username, password):
+    """去数据库验证账号密码"""
+    try:
+        sql = "SELECT * FROM shop_owners WHERE username = :u AND password = :p"
+        df = run_query(sql, {"u": username, "p": password})
+        if not df.empty:
+            return df.iloc[0]['shop_name']
+        return None
+    except:
+        return None
+
 def check_login():
+    # 1. 如果 session 里已经有登录状态，直接通过
     if st.session_state.current_user:
         return True
-    
+
+    # 2. 如果 session 没有，检查浏览器 Cookie
+    # Cookie 格式我们存为 "username|password" (实际生产建议加密，这里简单处理)
+    if cookie_auth:
+        try:
+            c_user, c_pass = cookie_auth.split("|")
+            shop = verify_user(c_user, c_pass)
+            if shop:
+                st.session_state.current_user = c_user
+                st.session_state.shop_name = shop
+                st.toast(f"欢迎回来，{shop} (免密登录成功)")
+                return True
+        except:
+            # Cookie 格式不对或验证失败，忽略
+            pass
+
+    # 3. 如果都没有，显示登录界面
     st.header("🔐 商家后台登录")
+    
     with st.form("login_form"):
         username = st.text_input("商家账号").strip()
         password = st.text_input("密码", type="password").strip()
+        remember_me = st.checkbox("30天内免密登录")
         submit = st.form_submit_button("登录")
         
         if submit:
-            try:
-                sql = "SELECT * FROM shop_owners WHERE username = :u AND password = :p"
-                df = run_query(sql, {"u": username, "p": password})
+            shop = verify_user(username, password)
+            if shop:
+                st.session_state.current_user = username
+                st.session_state.shop_name = shop
                 
-                if not df.empty:
-                    st.session_state.current_user = username
-                    st.session_state.shop_name = df.iloc[0]['shop_name']
-                    st.success("登录成功！")
-                    st.rerun()
-                else:
-                    st.error("账号或密码错误")
-            except Exception as e:
-                st.error(f"登录失败: {e}")
+                # 如果勾选了记住我，设置 Cookie
+                if remember_me:
+                    # 设置过期时间为 30 天后
+                    expires = datetime.now() + timedelta(days=30)
+                    # 存入 username|password
+                    cookie_val = f"{username}|{password}"
+                    cookie_manager.set("saas_auth", cookie_val, expires_at=expires)
+                
+                st.success("登录成功！")
+                time.sleep(0.5)
+                st.rerun()
+            else:
+                st.error("账号或密码错误")
     return False
 
 if not check_login():
     st.stop()
 
-# 商家登录后的全局变量
+# 全局变量赋值
 CURRENT_USER = st.session_state.current_user
 SHOP_NAME = st.session_state.shop_name
 
 st.sidebar.divider()
 st.sidebar.write(f"🏠 **{SHOP_NAME}**")
+
+# 退出登录逻辑升级：同时清理 Cookie
 if st.sidebar.button("退出登录"):
     st.session_state.current_user = None
+    # 删除 Cookie
+    cookie_manager.delete("saas_auth")
     st.rerun()
 
-# 接原本的菜单代码...
+# 👇 下面接原本的 menu = st.sidebar.radio... 代码，完全不动 👇
 
 menu = st.sidebar.radio("功能菜单", ["消费结账", "会员充值", "会员管理", "账目查询"])
 st.title(f"💅 {menu}")
