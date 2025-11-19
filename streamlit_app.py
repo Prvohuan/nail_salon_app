@@ -183,9 +183,10 @@ SHOP_NAME = st.session_state.shop_name
 st.sidebar.divider()
 st.sidebar.write(f"🏠 **{SHOP_NAME}**")
 
+# === 👇 新增：店铺二维码生成器 (修复版) ===
 with st.sidebar.expander("📱 店铺二维码"):
-    # 这里填你部署好的 Streamlit 真实网址
-    shop_url = "https://nailsalonapp-4t6pup4wfnyg4kydappinix.streamlit.app/" 
+    # ⚠️ 记得把你真实的 App 网址填在这里！
+    shop_url = "https://nailsalonapp-4t6pup4wfnyg4kydappinix.streamlit.app" 
     
     # 生成二维码
     qr = qrcode.QRCode(version=1, box_size=10, border=5)
@@ -193,8 +194,14 @@ with st.sidebar.expander("📱 店铺二维码"):
     qr.make(fit=True)
     img = qr.make_image(fill_color="black", back_color="white")
     
+    # --- 关键修复：把图片转成 Streamlit 能看懂的格式 (PNG流) ---
+    img_buffer = BytesIO()
+    img.save(img_buffer, format="PNG")
+    # -------------------------------------------------------
+    
     # 显示
-    st.image(img, caption="顾客扫码自助查询", use_container_width=True)
+    st.image(img_buffer, caption="顾客扫码自助查询", use_container_width=True)
+# === 👆 新增结束 ===
 
 # 退出登录逻辑
 if st.sidebar.button("退出登录"):
