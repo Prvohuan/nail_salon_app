@@ -413,18 +413,16 @@ elif menu == "会员管理":
             st.dataframe(display_df, use_container_width=True, hide_index=True)
             st.caption("💡 提示：输入 **姓名** 或 **手机号** 锁定一人后，即可修改全部资料。")
 # ==========================
-# 功能 D: 账目查询 (Altair 并排柱状图版)
+# 功能 D: 账目查询 (Altair 分组柱状图版 - 再次修正)
 # ==========================
 elif menu == "账目查询":
     st.header("📊 经营数据分析")
     
-    # 引入绘图库
-    import altair as alt
+    import altair as alt # 确保 altair 已导入
     
-    # --- 1. 顶部图表：近7天收支趋势 (并排显示) ---
+    # --- 1. 顶部图表：近7天经营趋势 (分组柱状图) ---
     st.subheader("📈 近7天经营趋势")
     
-    # 查最近7天的数据
     chart_sql = """
         SELECT date(date) as day, type, SUM(amount) as total
         FROM transactions
@@ -436,26 +434,38 @@ elif menu == "账目查询":
     chart_df = run_query(chart_sql, {"owner": CURRENT_USER})
     
     if not chart_df.empty:
-        # 1. 数据预处理：把英文类型映射成中文，方便图表显示
-        # map: RECHARGE -> 充值收入, SPEND -> 消费扣款
         chart_df['type_cn'] = chart_df['type'].map({'RECHARGE': '充值收入', 'SPEND': '消费扣款'})
         
-        # 2. 使用 Altair 画并排柱状图
-        chart = alt.Chart(chart_df).mark_bar().encode(
-            # X轴：日期
-            x=alt.X('day:T', axis=alt.Axis(title='日期', format='%m-%d')),
+        # 确保所有日期都有充值和消费两行，没有数据的填0，防止柱子缺失
+        # 获取所有日期
+        all_days = pd.date_range(end=datetime.now().date(), periods=7, freq='D')
+        all_types = ['充值收入', '消费扣款']
+        
+        # 创建一个完整的日期-类型组合
+        full_index = pd.MultiIndex.from_product([all_days, all_types], names=['day', 'type_cn'])
+        
+        # 将原始数据重新索引，缺失值填0
+        chart_df_pivot = chart_df.set_index(['day', 'type_cn'])['total'].reindex(full_index, fill_value=0).reset_index()
+        
+        # 确保日期格式正确， Altair 需要日期类型
+        chart_df_pivot['day'] = pd.to_datetime(chart_df_pivot['day'])
+
+        chart = alt.Chart(chart_df_pivot).mark_bar().encode(
+            # X轴：类型 (充值/消费)，在每个日期组内左右排开
+            x=alt.X('type_cn:N', axis=alt.Axis(title=None, labels=True)),
             
             # Y轴：金额
             y=alt.Y('total:Q', axis=alt.Axis(title='金额 (¥)')),
             
-            # 颜色：根据类型变色 (消费=红, 充值=绿)
+            # 颜色：根据类型变色
             color=alt.Color('type_cn:N', 
                             scale=alt.Scale(domain=['消费扣款', '充值收入'], range=['#FF4B4B', '#00C805']),
                             legend=alt.Legend(title="类型")),
             
-            # 【关键】偏移量：这个属性让柱子并排而不是堆叠
-            # sort 决定了左右顺序：消费扣款在左，充值收入在右
-            xOffset=alt.X('type_cn:N', sort=['消费扣款', '充值收入']),
+            # 【关键】列：按日期分组 (每个日期显示一组柱子)
+            column=alt.Column('day:T', 
+                              header=alt.Header(titleOrient="bottom", labelOrient="bottom", format='%m-%d'),
+                              title='日期'), # 在每个小图的标题显示日期
             
             # 鼠标悬停提示
             tooltip=[
@@ -465,9 +475,12 @@ elif menu == "账目查询":
             ]
         ).properties(
             height=300 # 图表高度
+        ).configure_header(
+            titleFontSize=14,
+            labelFontSize=12
         ).configure_axis(
-            labelFontSize=12,
-            titleFontSize=14
+            labelFontSize=10, # 调整 x 轴标签字体大小
+            titleFontSize=12  # 调整 y 轴标签字体大小
         )
         
         st.altair_chart(chart, use_container_width=True)
