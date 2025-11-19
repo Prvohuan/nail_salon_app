@@ -413,34 +413,116 @@ elif menu == "会员管理":
             st.dataframe(display_df, use_container_width=True, hide_index=True)
             st.caption("💡 提示：输入 **姓名** 或 **手机号** 锁定一人后，即可修改全部资料。")
 # ==========================
-# 功能 D: 账目查询 (优化日期显示)
+# 功能 D: 账目查询 (经营分析版)
 # ==========================
 elif menu == "账目查询":
-    st.header("📊 账目流水")
+    st.header("📊 经营数据分析")
+    
+    # --- 1. 顶部图表：近7天收支趋势 (固定展示) ---
+    st.subheader("📈 近7天经营趋势")
+    
+    # 查最近7天的数据
+    chart_sql = """
+        SELECT date(date) as day, type, SUM(amount) as total
+        FROM transactions
+        WHERE owner_username = :owner 
+        AND date >= CURRENT_DATE - INTERVAL '6 days'
+        GROUP BY day, type
+        ORDER BY day
+    """
+    chart_df = run_query(chart_sql, {"owner": CURRENT_USER})
+    
+    if not chart_df.empty:
+        # 数据转换：为了画图，我们需要把表变成 日期为索引，类型为列 的格式
+        # pivot_table 后格式： index=day, columns=type (RECHARGE, SPEND), values=total
+        chart_data = chart_df.pivot(index='day', columns='type', values='total').fillna(0)
+        
+        # 简单的列名汉化，让图例更好看
+        chart_data = chart_data.rename(columns={'RECHARGE': '充值收入', 'SPEND': '消费扣款'})
+        
+        st.bar_chart(chart_data, color=["#FF4B4B", "#00C805"]) # 红色消费，绿色充值 (Streamlit自动分配颜色，也可手动指定)
+    else:
+        st.caption("最近7天暂无数据")
+        
+    st.divider()
+
+    # --- 2. 查询过滤器 ---
+    st.subheader("🔍 详细账目查询")
+    
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        # 搜索框
+        search_term = st.text_input("👤 搜索会员 (姓名/全号/尾号)").strip()
+    with col2:
+        # 日期范围 (默认本月)
+        today = datetime.now()
+        first_day = today.replace(day=1)
+        date_range = st.date_input("📅 选择日期范围", value=(first_day, today))
+
+    # --- 3. 构造查询 SQL ---
     sql = """
-        SELECT t.date, m.name, t.type, t.amount, t.detail, t.signature
+        SELECT t.date, m.name, m.phone, t.type, t.amount, t.detail, t.signature
         FROM transactions t
         JOIN members m ON t.member_id = m.id
         WHERE t.owner_username = :owner
-        ORDER BY t.id DESC LIMIT 20
     """
-    df = run_query(sql, {"owner": CURRENT_USER})
+    params = {"owner": CURRENT_USER}
+
+    # 加入搜索条件
+    if search_term:
+        sql += " AND (m.phone = :term OR m.name ILIKE :term OR m.phone LIKE :tail)"
+        params["term"] = search_term
+        params["tail"] = f"%{search_term}" if (len(search_term)==4 and search_term.isdigit()) else "impossible_match"
+
+    # 加入日期条件
+    # st.date_input 返回的是一个元组，可能只有开始日期，也可能都有
+    if isinstance(date_range, tuple):
+        if len(date_range) > 0:
+            sql += " AND t.date >= :start_date"
+            params["start_date"] = date_range[0]
+        if len(date_range) > 1:
+            # 结束日期要加一天，因为数据库存的是 '2023-11-20 12:00'，而查询 '2023-11-20' 默认是0点
+            # 所以要查到 '2023-11-21 00:00' 之前
+            import datetime as dt
+            end_date = date_range[1] + dt.timedelta(days=1)
+            sql += " AND t.date < :end_date"
+            params["end_date"] = end_date
+
+    sql += " ORDER BY t.id DESC"
     
+    # 执行查询
+    df = run_query(sql, params)
+    
+    # --- 4. 统计卡片 (基于筛选结果) ---
     if not df.empty:
+        # 计算合计
+        total_recharge = df[df['type'] == 'RECHARGE']['amount'].sum()
+        total_spend = df[df['type'] == 'SPEND']['amount'].sum()
+        
+        # 展示统计
+        m1, m2, m3 = st.columns(3)
+        m1.metric("笔数", f"{len(df)} 笔")
+        m2.metric("充值合计 (收入)", f"¥{total_recharge:,.2f}")
+        m3.metric("消费合计 (消耗)", f"¥{total_spend:,.2f}")
+        
+        # --- 5. 详细列表 ---
+        st.write("---")
         for i, row in df.iterrows():
-            # 【关键修改】格式化日期
-            # 先转成 datetime 对象，再格式化为 "年-月-日 时:分:秒"
+            # 日期格式化
             try:
                 fmt_date = pd.to_datetime(row['date']).strftime('%Y-%m-%d %H:%M:%S')
             except:
-                fmt_date = row['date'] # 如果转换失败就显示原样
+                fmt_date = row['date']
             
-            # 标题显示：时间 - 姓名 - 金额
-            with st.expander(f"{fmt_date} | {row['name']} | ¥{row['amount']}"):
-                st.write(f"**类型:** {row['type']}")
+            # 定义图标
+            icon = "💰" if row['type'] == 'RECHARGE' else "💅"
+            color = "green" if row['type'] == 'RECHARGE' else "red"
+            
+            with st.expander(f"{icon} {fmt_date} | {row['name']} | :{'green' if row['type']=='RECHARGE' else 'red'}[¥{row['amount']}]"):
+                st.write(f"**手机:** {row['phone']}")
                 st.write(f"**详情:** {row['detail']}")
                 if row['signature']:
-                    st.write("**签字:**")
+                    st.write("**签字确认:**")
                     st.image(base64.b64decode(row['signature']), width=200)
     else:
-        st.info("暂无数据")
+        st.info("在此筛选条件下暂无数据")
