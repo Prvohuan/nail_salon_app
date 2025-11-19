@@ -413,12 +413,15 @@ elif menu == "会员管理":
             st.dataframe(display_df, use_container_width=True, hide_index=True)
             st.caption("💡 提示：输入 **姓名** 或 **手机号** 锁定一人后，即可修改全部资料。")
 # ==========================
-# 功能 D: 账目查询 (经营分析版)
+# 功能 D: 账目查询 (Altair 并排柱状图版)
 # ==========================
 elif menu == "账目查询":
     st.header("📊 经营数据分析")
     
-    # --- 1. 顶部图表：近7天收支趋势 (固定展示) ---
+    # 引入绘图库
+    import altair as alt
+    
+    # --- 1. 顶部图表：近7天收支趋势 (并排显示) ---
     st.subheader("📈 近7天经营趋势")
     
     # 查最近7天的数据
@@ -433,14 +436,42 @@ elif menu == "账目查询":
     chart_df = run_query(chart_sql, {"owner": CURRENT_USER})
     
     if not chart_df.empty:
-        # 数据转换：为了画图，我们需要把表变成 日期为索引，类型为列 的格式
-        # pivot_table 后格式： index=day, columns=type (RECHARGE, SPEND), values=total
-        chart_data = chart_df.pivot(index='day', columns='type', values='total').fillna(0)
+        # 1. 数据预处理：把英文类型映射成中文，方便图表显示
+        # map: RECHARGE -> 充值收入, SPEND -> 消费扣款
+        chart_df['type_cn'] = chart_df['type'].map({'RECHARGE': '充值收入', 'SPEND': '消费扣款'})
         
-        # 简单的列名汉化，让图例更好看
-        chart_data = chart_data.rename(columns={'RECHARGE': '充值收入', 'SPEND': '消费扣款'})
+        # 2. 使用 Altair 画并排柱状图
+        chart = alt.Chart(chart_df).mark_bar().encode(
+            # X轴：日期
+            x=alt.X('day:T', axis=alt.Axis(title='日期', format='%m-%d')),
+            
+            # Y轴：金额
+            y=alt.Y('total:Q', axis=alt.Axis(title='金额 (¥)')),
+            
+            # 颜色：根据类型变色 (消费=红, 充值=绿)
+            color=alt.Color('type_cn:N', 
+                            scale=alt.Scale(domain=['消费扣款', '充值收入'], range=['#FF4B4B', '#00C805']),
+                            legend=alt.Legend(title="类型")),
+            
+            # 【关键】偏移量：这个属性让柱子并排而不是堆叠
+            # sort 决定了左右顺序：消费扣款在左，充值收入在右
+            xOffset=alt.X('type_cn:N', sort=['消费扣款', '充值收入']),
+            
+            # 鼠标悬停提示
+            tooltip=[
+                alt.Tooltip('day:T', title='日期', format='%Y-%m-%d'),
+                alt.Tooltip('type_cn:N', title='类型'),
+                alt.Tooltip('total:Q', title='金额')
+            ]
+        ).properties(
+            height=300 # 图表高度
+        ).configure_axis(
+            labelFontSize=12,
+            titleFontSize=14
+        )
         
-        st.bar_chart(chart_data, color=["#FF4B4B", "#00C805"]) # 红色消费，绿色充值 (Streamlit自动分配颜色，也可手动指定)
+        st.altair_chart(chart, use_container_width=True)
+        
     else:
         st.caption("最近7天暂无数据")
         
