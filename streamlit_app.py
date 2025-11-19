@@ -519,8 +519,9 @@ elif menu == "会员管理":
             display_df['注册时间'] = pd.to_datetime(display_df['注册时间']).dt.strftime('%Y-%m-%d')
             st.dataframe(display_df, use_container_width=True, hide_index=True)
             st.caption("💡 提示：输入 **姓名** 或 **手机号** 锁定一人后，即可修改全部资料。")
+
 # ==========================
-# 功能 D: 账目查询 (图表优化版)
+# 功能 D: 账目查询 (标准并排柱状图版)
 # ==========================
 if menu == "账目查询":
     st.header("📊 经营数据分析")
@@ -541,39 +542,45 @@ if menu == "账目查询":
     if not chart_df.empty:
         chart_df['type_cn'] = chart_df['type'].map({'RECHARGE': '充值收入', 'SPEND': '消费扣款'})
         
-        # 补全日期逻辑
+        # 数据补全逻辑 (保持不变，确保每天都有数据)
         all_days = pd.date_range(end=datetime.now().date(), periods=7, freq='D')
         all_types = ['充值收入', '消费扣款']
         full_index = pd.MultiIndex.from_product([all_days, all_types], names=['day', 'type_cn'])
         chart_df_pivot = chart_df.set_index(['day', 'type_cn'])['total'].reindex(full_index, fill_value=0).reset_index()
         chart_df_pivot['day'] = pd.to_datetime(chart_df_pivot['day'])
 
-        # 画图
+        # --- ⬇️ 这里是重点修改的地方 ⬇️ ---
         chart = alt.Chart(chart_df_pivot).mark_bar().encode(
-            # 【关键修改 1】X轴：隐藏底部的 "充值收入/消费扣款" 文字
-            x=alt.X('type_cn:N', axis=alt.Axis(title=None, labels=False, ticks=False)),
+            # X轴：直接显示日期
+            x=alt.X('day:T', axis=alt.Axis(title='日期', format='%m-%d')),
             
             # Y轴：金额
             y=alt.Y('total:Q', axis=alt.Axis(title='金额 (¥)')),
             
-            # 【关键修改 2】颜色 & 图例：图例会自动显示在右上/右侧
+            # 颜色：区分充值/消费
             color=alt.Color('type_cn:N', 
                             scale=alt.Scale(domain=['消费扣款', '充值收入'], range=['#FF4B4B', '#00C805']),
-                            legend=alt.Legend(title="类型", orient="right")), # orient="right" 是默认位置
+                            legend=alt.Legend(title="类型", orient="top-left")), # 图例放在左上角或右上角
             
-            # 列分组：按日期排开
-            column=alt.Column('day:T', 
-                              header=alt.Header(titleOrient="bottom", labelOrient="bottom", format='%m-%d'),
-                              title='日期'),
+            # 【核心魔法】xOffset：让同一天的两个柱子并排站，不要叠在一起
+            xOffset=alt.X('type_cn:N', sort=['消费扣款', '充值收入']),
             
+            # 鼠标悬停提示
             tooltip=[
                 alt.Tooltip('day:T', title='日期', format='%Y-%m-%d'),
                 alt.Tooltip('type_cn:N', title='类型'),
                 alt.Tooltip('total:Q', title='金额')
             ]
-        ).properties(height=300).configure_axis(labelFontSize=10).configure_header(labelFontSize=12)
+        ).properties(
+            height=300 # 控制图表高度
+        ).configure_axis(
+            labelFontSize=12,
+            titleFontSize=14
+        )
         
         st.altair_chart(chart, use_container_width=True)
+        # --- ⬆️ 修改结束 ⬆️ ---
+
     else:
         st.caption("最近7天暂无数据")
         
