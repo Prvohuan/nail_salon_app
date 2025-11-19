@@ -521,7 +521,7 @@ elif menu == "会员管理":
             st.caption("💡 提示：输入 **姓名** 或 **手机号** 锁定一人后，即可修改全部资料。")
 
 # ==========================
-# 功能 D: 账目查询 (修正并排版)
+# 功能 D: 账目查询 (修复图表重叠问题)
 # ==========================
 if menu == "账目查询":
     st.header("📊 经营数据分析")
@@ -542,31 +542,35 @@ if menu == "账目查询":
     if not chart_df.empty:
         chart_df['type_cn'] = chart_df['type'].map({'RECHARGE': '充值收入', 'SPEND': '消费扣款'})
         
-        # 数据补全逻辑 (保持不变)
+        # 1. 补全日期
         all_days = pd.date_range(end=datetime.now().date(), periods=7, freq='D')
         all_types = ['充值收入', '消费扣款']
         full_index = pd.MultiIndex.from_product([all_days, all_types], names=['day', 'type_cn'])
         chart_df_pivot = chart_df.set_index(['day', 'type_cn'])['total'].reindex(full_index, fill_value=0).reset_index()
-        chart_df_pivot['day'] = pd.to_datetime(chart_df_pivot['day'])
+        
+        # 2. 【关键修改】新增一列纯字符串格式的日期 (例如 "11-20")
+        # 这样做是为了欺骗图表，让它把日期当成普通的"分类"，从而能正确地左右并排
+        chart_df_pivot['day_str'] = chart_df_pivot['day'].dt.strftime('%m-%d')
 
-        # 画图
+        # 3. 画图
         chart = alt.Chart(chart_df_pivot).mark_bar().encode(
-            # X轴：日期
-            x=alt.X('day:T', axis=alt.Axis(title='日期', format='%m-%d')),
+            # X轴：改用 day_str (字符串)，并且类型设为 :O (Ordinal/有序分类)
+            x=alt.X('day_str:O', axis=alt.Axis(title='日期', labelAngle=0)), 
             
-            # Y轴：金额 【⚠️ 关键修改在这里：stack=None】
+            # Y轴：金额 (stack=None 必须保留)
             y=alt.Y('total:Q', axis=alt.Axis(title='金额 (¥)'), stack=None),
             
             # 颜色
             color=alt.Color('type_cn:N', 
                             scale=alt.Scale(domain=['消费扣款', '充值收入'], range=['#FF4B4B', '#00C805']),
-                            legend=alt.Legend(title="类型", orient="top-left")), # 图例在左上角
+                            legend=alt.Legend(title="类型", orient="top-left")),
             
-            # 偏移量：这行配合 stack=None 才能实现并排
+            # 偏移：现在因为X轴是分类，这个偏移就能完美生效了
             xOffset=alt.X('type_cn:N', sort=['消费扣款', '充值收入']),
             
+            # 提示框
             tooltip=[
-                alt.Tooltip('day:T', title='日期', format='%Y-%m-%d'),
+                alt.Tooltip('day_str:N', title='日期'),
                 alt.Tooltip('type_cn:N', title='类型'),
                 alt.Tooltip('total:Q', title='金额')
             ]
